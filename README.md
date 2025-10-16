@@ -2,7 +2,9 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Micropython firmware and ROS Noetic driver for the RP2040 Connect board with an onboard IMU. It does onboard fusion with arbitrary precision floats for high numerical stability.
+Micropython firmware and ROS Noetic driver for the RP2040 Connect board with an onboard IMU. 
+
+This branch only reports raw accel and gyro values at 100hz, micropython firmware v1.25.0 (2025-04-15) is required.
 
 ## Setup
 
@@ -30,6 +32,4 @@ Example launch:
 
 ## Published Topics
 
-- `/rp2040_imu/data` (Imu), quaternion orientation and raw gyro and accel data
-
-- `/rp2040_imu/pose` (PoseStamped), debug pose publisher
+- `/rp2040_imu/data` (Imu),  raw gyro and accel data

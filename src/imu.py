@@ -88,7 +88,7 @@ class RP2040IMU:
 						float(split[4]), #raw gyro y
 						float(split[5]) #raw gyro z
 					)
-		except (serial.SerialException, OSError) as e:
+		except Exception as e:
 			print(f"Connection lost: {e}")
 			print("Attempting to reconnect...")
 			self.port.close()  # Close the port if it is open
