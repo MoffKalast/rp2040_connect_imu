@@ -52,20 +52,20 @@ class RP2040IMU:
 			0, 0, 9999
 		]
 
-		# Angular velocity (rad/s)
-		imu_msg.angular_velocity.x = gx
-		imu_msg.angular_velocity.y = gy
-		imu_msg.angular_velocity.z = gz
+		# Angular velocity, deg/s to rad/s
+		imu_msg.angular_velocity.x = math.radians(gx)
+		imu_msg.angular_velocity.y = math.radians(gy)
+		imu_msg.angular_velocity.z = math.radians(gz)
 		imu_msg.angular_velocity_covariance = [
 			0.0001, 0, 0,
 			0, 0.0001, 0,
 			0, 0, 0.0001
 		]
 
-		# Linear acceleration (m/s²)
-		imu_msg.linear_acceleration.x = ax
-		imu_msg.linear_acceleration.y = ay
-		imu_msg.linear_acceleration.z = az
+		# Linear acceleration, g to m/s²
+		imu_msg.linear_acceleration.x = ax * 9.80665
+		imu_msg.linear_acceleration.y = ay * 9.80665
+		imu_msg.linear_acceleration.z = az * 9.80665
 		imu_msg.linear_acceleration_covariance = [
 			0.04, 0, 0,
 			0, 0.04, 0,
