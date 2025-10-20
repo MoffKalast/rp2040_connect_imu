@@ -12,7 +12,7 @@ Flash the micropython firmware to the RP2040 and upload the files in /firmware.
 
 Create udev rule `/etc/udev/rules.d/99-ttyIMU.rules`:
 ```bash
-SUBSYSTEM=="tty", ATTRS{idVendor}=="2341", ATTRS{idProduct}=="025e", SYMLINK+="ttyIMU"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="2341", ATTRS{idProduct}=="025e", SYMLINK+="ttyIMU", MODE="0666"
 ```
 
 ```bash
