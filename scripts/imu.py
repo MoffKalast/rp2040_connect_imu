@@ -6,7 +6,7 @@ import re
 import math
 
 from tf.transformations import quaternion_from_euler, euler_from_quaternion, quaternion_slerp, quaternion_multiply, quaternion_conjugate
-from sensor_msgs.msg import Imu
+from sensor_msgs.msg import Imu, Temperature
 from visualization_msgs.msg import Marker
 from geometry_msgs.msg import PoseStamped 
 
@@ -14,12 +14,13 @@ class RP2040IMU:
 	def __init__(self):
 		rospy.init_node('rp2040_imu_node')
 
-		self.param_serial_port = rospy.get_param('~port', "/dev/ttyACM0")
+		self.param_serial_port = rospy.get_param('~port', "/dev/ttyIMU")
 		self.param_baud_rate = rospy.get_param('~baud_rate', "115200")
 
 		self.connect_to_serial_port()
 
 		self.imu_pub = rospy.Publisher("/rp2040_imu/data_raw", Imu, queue_size=10)
+		self.temp_pub = rospy.Publisher("/rp2040_imu/temperature", Temperature, queue_size=10)
 
 		rospy.loginfo("IMU Ready")
 
@@ -34,6 +35,14 @@ class RP2040IMU:
 				print(f"Failed to connect to serial port: {e}")
 				print("Retrying in 2 seconds...")
 				time.sleep(2)  # Wait for 2 seconds before retrying
+
+	def publish_temperature_msg(self, value):
+		temp_msg = Temperature()
+		temp_msg.header.stamp = rospy.Time.now()
+		temp_msg.header.frame_id = "rp2040_imu_link"
+		temp_msg.temperature = value
+		temp_msg.variance = 0
+		self.temp_pub.publish(temp_msg)	
 
 	def publish_imu_msg(self, ax, ay, az, gx, gy, gz):
 
@@ -87,6 +96,10 @@ class RP2040IMU:
 						float(split[3]), #raw gyro x
 						float(split[4]), #raw gyro y
 						float(split[5]) #raw gyro z
+					)
+				elif len(split) == 1:
+					self.publish_temperature_msg(
+						float(split[0])
 					)
 		except Exception as e:
 			print(f"Connection lost: {e}")

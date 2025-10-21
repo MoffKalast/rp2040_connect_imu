@@ -1,5 +1,6 @@
 #include <ros/ros.h>
 #include <sensor_msgs/Imu.h>
+#include <sensor_msgs/Temperature.h>
 
 #include <boost/asio.hpp>
 #include <boost/algorithm/string.hpp>
@@ -54,17 +55,21 @@ static inline quat_t quat_slerp(const quat_t &q1_in, const quat_t &q2_in, double
 		double sinom = std::sin(omega);
 		double s1 = std::sin((1.0 - t) * omega) / sinom;
 		double s2 = std::sin(t * omega) / sinom;
-		quat_t r = { q1[0]*s1 + q2[0]*s2,
-					 q1[1]*s1 + q2[1]*s2,
-					 q1[2]*s1 + q2[2]*s2,
-					 q1[3]*s1 + q2[3]*s2 };
+		quat_t r = {
+			q1[0]*s1 + q2[0]*s2,
+			q1[1]*s1 + q2[1]*s2,
+			q1[2]*s1 + q2[2]*s2,
+			q1[3]*s1 + q2[3]*s2
+		};
 		return quat_normalize(r);
 	} else {
 		// very close - use linear interpolation
-		quat_t r = { q1[0] * (1.0 - t) + q2[0] * t,
-					q1[1] * (1.0 - t) + q2[1] * t,
-					q1[2] * (1.0 - t) + q2[2] * t,
-					q1[3] * (1.0 - t) + q2[3] * t };
+		quat_t r = {
+			q1[0] * (1.0 - t) + q2[0] * t,
+			q1[1] * (1.0 - t) + q2[1] * t,
+			q1[2] * (1.0 - t) + q2[2] * t,
+			q1[3] * (1.0 - t) + q2[3] * t 
+		};
 		return quat_normalize(r);
 	}
 }
@@ -115,39 +120,49 @@ static inline std::array<double,3> quat_to_euler(const quat_t &q) {
 // Build small rotation quaternion from angular velocity vector (rad/s) and dt
 static inline quat_t delta_quat_from_omega(double wx, double wy, double wz, double dt) {
 	double omega_norm = std::sqrt(wx*wx + wy*wy + wz*wz);
+
 	if (omega_norm < 1e-12) {
 		return {0.0, 0.0, 0.0, 1.0};
 	}
+
 	double theta_over_two = 0.5 * omega_norm * dt;
 	double s = std::sin(theta_over_two);
 	double c = std::cos(theta_over_two);
 	double ux = wx / omega_norm;
 	double uy = wy / omega_norm;
 	double uz = wz / omega_norm;
-	return { ux * s, uy * s, uz * s, c };
+
+	return {
+		ux * s,
+		uy * s,
+		uz * s,
+		c
+	};
 }
 
 class RP2040IMUNode {
 public:
-	RP2040IMUNode(ros::NodeHandle& nh): io_(), serial_(io_), nh_(nh){
-		nh_.param<std::string>("port", param_port_, "/dev/ttyACM0");
-		nh_.param<int>("baud_rate", param_baud_rate_, 115200);
-		nh_.param<double>("accel_correction_gain", accel_gain_, 0.03);
+	RP2040IMUNode(ros::NodeHandle& nh): io(), serial(io), nh_(nh){
+		nh_.param<std::string>("port", param_port, "/dev/ttyIMU");
+		nh_.param<int>("baud_rate", param_baud_rate, 115200);
+		nh_.param<double>("accel_correction_gain", accel_gain, 0.03);
+		nh_.param<double>("gyro_scale", gyro_scale, 1.15);
 
-		imu_pub_ = nh_.advertise<sensor_msgs::Imu>("/rp2040_imu/data", 10);
+		imu_raw_pub = nh_.advertise<sensor_msgs::Imu>("/rp2040_imu/data_raw", 20);
+		imu_data_pub = nh_.advertise<sensor_msgs::Imu>("/rp2040_imu/data", 20);
+		temp_pub = nh_.advertise<sensor_msgs::Temperature>("/rp2040_imu/temperature", 1, true);
 
-		q_global_ = {0.0, 0.0, 0.0, 1.0};
-		last_time_ = ros::Time::now();
+		orientation = {0.0, 0.0, 0.0, 1.0};
+		last_time = ros::Time::now();
 
 		openSerial();
-
-		ROS_INFO("rp2040_imu_node started. port: %s, baud: %d, accel_gain: %f", param_port_.c_str(), param_baud_rate_, accel_gain_);
+		ROS_INFO("rp2040_imu_node started. port: %s, baud: %d, accel_gain: %f", param_port.c_str(), param_baud_rate, accel_gain);
 	}
 
 	//cleanup
 	~RP2040IMUNode() {
 		try {
-			if (serial_.is_open()) serial_.close();
+			if (serial.is_open()) serial.close();
 		} catch(...) {}
 	}
 
@@ -158,7 +173,7 @@ public:
 		while (ros::ok()) {
 			try {
 				// read until newline (blocks, but ok here)
-				std::size_t n = asio::read_until(serial_, buf, '\n');
+				std::size_t n = asio::read_until(serial, buf, '\n');
 				std::string line;
 				std::getline(is, line);
 				boost::algorithm::trim(line);
@@ -176,6 +191,10 @@ public:
 						double gz = std::stod(toks[5]);
 						publishImu(ax, ay, az, gx, gy, gz);
 					}
+					else if (toks.size() == 1) {
+						double temp = std::stod(toks[0]);
+						publishTemperature(temp);
+					}
 				}
 
 				if (buf.size() > 4096){
@@ -184,7 +203,7 @@ public:
 			} catch (std::exception &e) {
 				ROS_WARN("IMU disconnected, trying to reconnect...");
 				try {
-					serial_.close();
+					serial.close();
 				} catch(...) {}
 
 				ros::Duration(2.0).sleep();
@@ -197,53 +216,68 @@ public:
 private:
 
 	ros::NodeHandle nh_;
-	ros::Publisher imu_pub_;
 
-	std::string param_port_;
-	int param_baud_rate_;
-	double accel_gain_;
+	ros::Publisher temp_pub;
+	ros::Publisher imu_raw_pub;
+	ros::Publisher imu_data_pub;
 
-	asio::io_context io_;
-	asio::serial_port serial_;
+	std::string param_port;
+	int param_baud_rate;
+	double accel_gain;
+	double gyro_scale;
 
-	quat_t q_global_;
-	ros::Time last_time_;
+	asio::io_context io;
+	asio::serial_port serial;
+
+	quat_t orientation;
+	ros::Time last_time;
+	ros::Time last_data_time;
 
 	void openSerial() {
 		try {
-			if (serial_.is_open())
-				serial_.close();
+			if (serial.is_open())
+				serial.close();
 
-			serial_.open(param_port_);
-			serial_.set_option(serial_port_base::baud_rate(param_baud_rate_));
-			serial_.set_option(serial_port_base::character_size(8));
-			serial_.set_option(serial_port_base::parity(serial_port_base::parity::none));
-			serial_.set_option(serial_port_base::stop_bits(serial_port_base::stop_bits::one));
-			serial_.set_option(serial_port_base::flow_control(serial_port_base::flow_control::none));
-			ROS_INFO("Opened serial port %s @ %d", param_port_.c_str(), param_baud_rate_);
+			serial.open(param_port);
+			serial.set_option(serial_port_base::baud_rate(param_baud_rate));
+			serial.set_option(serial_port_base::character_size(8));
+			serial.set_option(serial_port_base::parity(serial_port_base::parity::none));
+			serial.set_option(serial_port_base::stop_bits(serial_port_base::stop_bits::one));
+			serial.set_option(serial_port_base::flow_control(serial_port_base::flow_control::none));
+			ROS_INFO("Opened serial port %s @ %d", param_port.c_str(), param_baud_rate);
 		} catch (std::exception &e) {
-			ROS_ERROR("Failed to open serial port %s: %s", param_port_.c_str(), e.what());
+			ROS_ERROR("Failed to open serial port %s: %s", param_port.c_str(), e.what());
 		}
+	}
+
+	void publishTemperature(double value) {
+		sensor_msgs::Temperature msg;
+		msg.header.stamp = ros::Time::now();
+		msg.header.frame_id = "rp2040_imu_link";
+		msg.temperature = value;
+		msg.variance = 0.0;
+		temp_pub.publish(msg);
 	}
 
 	void publishImu(double ax_g, double ay_g, double az_g, double gx_deg, double gy_deg, double gz_deg) {
 		// Time delta
 		ros::Time now = ros::Time::now();
-		double dt = (now - last_time_).toSec();
-		last_time_ = now;
+		double dt = (now - last_time).toSec();
+		last_time = now;
 		if (dt <= 0.0 || dt > 0.05) {
 			// if abnormal dt, assume standard 0.01 (or simply skip gyro integration)
 			dt = 0.01;
 		}
 
 		// --- Gyro integration
-		double wx = gx_deg * M_PI / 180.0;
-		double wy = gy_deg * M_PI / 180.0;
-		double wz = gz_deg * M_PI / 180.0;
+		double convert = gyro_scale * M_PI / 180.0;
+		double wx = gx_deg * convert;
+		double wy = gy_deg * convert;
+		double wz = gz_deg * convert;
 
 		quat_t dq = delta_quat_from_omega(wx, wy, wz, dt);
-		q_global_ = quat_multiply(q_global_, dq);
-		q_global_ = quat_normalize(q_global_);
+		orientation = quat_multiply(orientation, dq);
+		orientation = quat_normalize(orientation);
 
 		// --- Accel correction (acc in G's)
 		double ax = ax_g, ay = ay_g, az = az_g;
@@ -258,14 +292,14 @@ private:
 			double roll  = std::atan2(ay, az);
 
 			// keep yaw from current global quaternion
-			auto e = quat_to_euler(q_global_);
+			auto e = quat_to_euler(orientation);
 			double yaw = e[2];
 
 			quat_t q_acc = euler_to_quat(roll, pitch, yaw);
 
-			// slerp toward accel-derived quaternion by accel_gain_
-			q_global_ = quat_slerp(q_global_, q_acc, accel_gain_);
-			q_global_ = quat_normalize(q_global_);
+			// slerp toward accel-derived quaternion by accel_gain
+			orientation = quat_slerp(orientation, q_acc, accel_gain);
+			orientation = quat_normalize(orientation);
 		}
 
 		// Build and publish IMU message
@@ -273,13 +307,11 @@ private:
 		imu_msg.header.stamp = now;
 		imu_msg.header.frame_id = "rp2040_imu_link";
 
-		imu_msg.orientation.x = q_global_[0];
-		imu_msg.orientation.y = q_global_[1];
-		imu_msg.orientation.z = q_global_[2];
-		imu_msg.orientation.w = q_global_[3];
-
-		// orientation covariance - lower since we fused accel for pitch/roll
-		imu_msg.orientation_covariance = {0.01, 0, 0, 0, 0.01, 0, 0, 0, 0.01};
+		imu_msg.orientation.x = 0;
+		imu_msg.orientation.y = 0;
+		imu_msg.orientation.z = 0;
+		imu_msg.orientation.w = 0;
+		imu_msg.orientation_covariance = {0, 0, 0, 0, 0, 0, 0, 0, 0};
 
 		imu_msg.angular_velocity.x = wx;
 		imu_msg.angular_velocity.y = wy;
@@ -293,7 +325,21 @@ private:
 		imu_msg.linear_acceleration.z = az_g * G;
 		imu_msg.linear_acceleration_covariance = {0.04,0,0,0,0.04,0,0,0,0.04};
 
-		imu_pub_.publish(imu_msg);
+		imu_raw_pub.publish(imu_msg);
+
+		dt = (now - last_data_time).toSec();
+		if(dt >= 0.02){
+			last_data_time = now;
+
+			imu_msg.orientation.x = orientation[0];
+			imu_msg.orientation.y = orientation[1];
+			imu_msg.orientation.z = orientation[2];
+			imu_msg.orientation.w = orientation[3];
+			imu_msg.orientation_covariance = {0.01, 0, 0, 0, 0.01, 0, 0, 0, 0.01};
+			imu_data_pub.publish(imu_msg);
+		}
+
+
 	}
 };
 
