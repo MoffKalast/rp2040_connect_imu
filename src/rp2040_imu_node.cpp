@@ -231,7 +231,7 @@ private:
 
 	quat_t orientation;
 	ros::Time last_time;
-	ros::Time last_data_time;
+	int fused_prescaler;
 
 	void openSerial() {
 		try {
@@ -327,9 +327,11 @@ private:
 
 		imu_raw_pub.publish(imu_msg);
 
-		dt = (now - last_data_time).toSec();
-		if(dt >= 0.02){
-			last_data_time = now;
+		fused_prescaler++;
+
+		//publish every third message, 100hz raw, 33hz fused
+		if(fused_prescaler == 3){
+			fused_prescaler = 0;
 
 			imu_msg.orientation.x = orientation[0];
 			imu_msg.orientation.y = orientation[1];
