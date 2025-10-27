@@ -1,6 +1,7 @@
-#include <ros/ros.h>
-#include <sensor_msgs/Imu.h>
-#include <sensor_msgs/Temperature.h>
+// rp2040_imu_node.cpp
+#include <rclcpp/rclcpp.hpp>
+#include <sensor_msgs/msg/imu.hpp>
+#include <sensor_msgs/msg/temperature.hpp>
 
 #include <boost/asio.hpp>
 #include <boost/algorithm/string.hpp>
@@ -10,6 +11,7 @@
 #include <array>
 #include <cmath>
 #include <chrono>
+#include <iostream>
 
 using boost::asio::serial_port_base;
 namespace asio = boost::asio;
@@ -140,40 +142,55 @@ static inline quat_t delta_quat_from_omega(double wx, double wy, double wz, doub
 	};
 }
 
-class RP2040IMUNode {
+class RP2040IMUNode : public rclcpp::Node {
 public:
-	RP2040IMUNode(ros::NodeHandle& nh): io(), serial(io), nh_(nh){
-		nh_.param<std::string>("port", param_port, "/dev/ttyIMU");
-		nh_.param<int>("baud_rate", param_baud_rate, 115200);
-		nh_.param<double>("accel_correction_gain", accel_gain, 0.03);
-		nh_.param<double>("gyro_scale", gyro_scale, 1.15);
+	RP2040IMUNode()
+	: Node("rp2040_imu_node"),
+	  io_(), serial_(io_), fused_prescaler(0)
+	{
+		// Declare parameters with defaults (fixed at startup)
+		this->declare_parameter<std::string>("port", "/dev/ttyIMU");
+		this->declare_parameter<int>("baud_rate", 115200);
+		this->declare_parameter<double>("accel_correction_gain", 0.03);
+		this->declare_parameter<double>("gyro_scale", 1.15);
 
-		imu_raw_pub = nh_.advertise<sensor_msgs::Imu>("/rp2040_imu/data_raw", 20);
-		imu_data_pub = nh_.advertise<sensor_msgs::Imu>("/rp2040_imu/data", 20);
-		temp_pub = nh_.advertise<sensor_msgs::Temperature>("/rp2040_imu/temperature", 1, true);
+		this->get_parameter("port", param_port);
+		this->get_parameter("baud_rate", param_baud_rate);
+		this->get_parameter("accel_correction_gain", accel_gain);
+		this->get_parameter("gyro_scale", gyro_scale);
+
+		// Publishers
+		imu_raw_pub = this->create_publisher<sensor_msgs::msg::Imu>("/rp2040_imu/data_raw", rclcpp::QoS(20));
+		imu_data_pub = this->create_publisher<sensor_msgs::msg::Imu>("/rp2040_imu/data", rclcpp::QoS(20));
+		// emulate latched behavior with transient_local QoS
+		auto temp_qos = rclcpp::QoS(rclcpp::KeepLast(1)).transient_local();
+		temp_pub = this->create_publisher<sensor_msgs::msg::Temperature>("/rp2040_imu/temperature", temp_qos);
 
 		orientation = {0.0, 0.0, 0.0, 1.0};
-		last_time = ros::Time::now();
+		last_time = this->now();
 
 		openSerial();
-		ROS_INFO("rp2040_imu_node started. port: %s, baud: %d, accel_gain: %f", param_port.c_str(), param_baud_rate, accel_gain);
+
+		RCLCPP_INFO(this->get_logger(), "rp2040_imu_node started. port: %s, baud: %d, accel_gain: %f",
+		            param_port.c_str(), param_baud_rate, accel_gain);
 	}
 
-	//cleanup
 	~RP2040IMUNode() {
 		try {
-			if (serial.is_open()) serial.close();
+			if (serial_.is_open()) serial_.close();
 		} catch(...) {}
 	}
 
+	// Blocking spin-like loop, keeps behavior close to original node
 	void spin() {
 		asio::streambuf buf;
 		std::istream is(&buf);
 
-		while (ros::ok()) {
+		while (rclcpp::ok()) {
 			try {
-				// read until newline (blocks, but ok here)
-				std::size_t n = asio::read_until(serial, buf, '\n');
+				// read until newline (blocks)
+				std::size_t n = asio::read_until(serial_, buf, '\n');
+				(void)n;
 				std::string line;
 				std::getline(is, line);
 				boost::algorithm::trim(line);
@@ -201,71 +218,71 @@ public:
 					buf.consume(buf.size());
 				}
 			} catch (std::exception &e) {
-				ROS_WARN("IMU disconnected, trying to reconnect...");
+				RCLCPP_WARN(this->get_logger(), "IMU disconnected or read error (%s), trying to reconnect...", e.what());
 				try {
-					serial.close();
+					serial_.close();
 				} catch(...) {}
 
-				ros::Duration(2.0).sleep();
+				// sleep for 2 seconds before retry
+				rclcpp::sleep_for(std::chrono::milliseconds(2000));
 				openSerial();
 			}
-			ros::spinOnce();
+
+			// allow rclcpp to process callbacks if any (none by default here)
+			rclcpp::spin_some(this->get_node_base_interface());
 		}
 	}
 
 private:
-
-	ros::NodeHandle nh_;
-
-	ros::Publisher temp_pub;
-	ros::Publisher imu_raw_pub;
-	ros::Publisher imu_data_pub;
+	// node members
+	rclcpp::Publisher<sensor_msgs::msg::Temperature>::SharedPtr temp_pub;
+	rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr imu_raw_pub;
+	rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr imu_data_pub;
 
 	std::string param_port;
 	int param_baud_rate;
 	double accel_gain;
 	double gyro_scale;
 
-	asio::io_context io;
-	asio::serial_port serial;
+	asio::io_context io_;
+	asio::serial_port serial_;
 
 	quat_t orientation;
-	ros::Time last_time;
+	rclcpp::Time last_time;
 	int fused_prescaler;
 
 	void openSerial() {
 		try {
-			if (serial.is_open())
-				serial.close();
+			if (serial_.is_open())
+				serial_.close();
 
-			serial.open(param_port);
-			serial.set_option(serial_port_base::baud_rate(param_baud_rate));
-			serial.set_option(serial_port_base::character_size(8));
-			serial.set_option(serial_port_base::parity(serial_port_base::parity::none));
-			serial.set_option(serial_port_base::stop_bits(serial_port_base::stop_bits::one));
-			serial.set_option(serial_port_base::flow_control(serial_port_base::flow_control::none));
-			ROS_INFO("Opened serial port %s @ %d", param_port.c_str(), param_baud_rate);
+			serial_.open(param_port);
+			serial_.set_option(serial_port_base::baud_rate(param_baud_rate));
+			serial_.set_option(serial_port_base::character_size(8));
+			serial_.set_option(serial_port_base::parity(serial_port_base::parity::none));
+			serial_.set_option(serial_port_base::stop_bits(serial_port_base::stop_bits::one));
+			serial_.set_option(serial_port_base::flow_control(serial_port_base::flow_control::none));
+			RCLCPP_INFO(this->get_logger(), "Opened serial port %s @ %d", param_port.c_str(), param_baud_rate);
 		} catch (std::exception &e) {
-			ROS_ERROR("Failed to open serial port %s: %s", param_port.c_str(), e.what());
+			RCLCPP_ERROR(this->get_logger(), "Failed to open serial port %s: %s", param_port.c_str(), e.what());
 		}
 	}
 
 	void publishTemperature(double value) {
-		sensor_msgs::Temperature msg;
-		msg.header.stamp = ros::Time::now();
+		sensor_msgs::msg::Temperature msg;
+		msg.header.stamp = this->now();
 		msg.header.frame_id = "rp2040_imu_link";
 		msg.temperature = value;
 		msg.variance = 0.0;
-		temp_pub.publish(msg);
+		temp_pub->publish(msg);
 	}
 
 	void publishImu(double ax_g, double ay_g, double az_g, double gx_deg, double gy_deg, double gz_deg) {
 		// Time delta
-		ros::Time now = ros::Time::now();
-		double dt = (now - last_time).toSec();
+		rclcpp::Time now = this->now();
+		double dt = (now - last_time).seconds();
 		last_time = now;
 		if (dt <= 0.0 || dt > 0.05) {
-			// if abnormal dt, assume standard 0.01 (or simply skip gyro integration)
 			dt = 0.01;
 		}
 
@@ -287,7 +304,6 @@ private:
 			ax /= acc_norm; ay /= acc_norm; az /= acc_norm;
 
 			// derive pitch & roll from accel (gravity vector)
-			// pitch = atan2(-ax, sqrt(ay^2 + az^2))
 			double pitch = std::atan2(-ax, std::sqrt(ay*ay + az*az));
 			double roll  = std::atan2(ay, az);
 
@@ -303,33 +319,34 @@ private:
 		}
 
 		// Build and publish IMU message
-		sensor_msgs::Imu imu_msg;
+		sensor_msgs::msg::Imu imu_msg;
 		imu_msg.header.stamp = now;
 		imu_msg.header.frame_id = "rp2040_imu_link";
 
-		imu_msg.orientation.x = 0;
-		imu_msg.orientation.y = 0;
-		imu_msg.orientation.z = 0;
-		imu_msg.orientation.w = 0;
-		imu_msg.orientation_covariance = {0, 0, 0, 0, 0, 0, 0, 0, 0};
+		// orientation initially zero for raw message
+		imu_msg.orientation.x = 0.0;
+		imu_msg.orientation.y = 0.0;
+		imu_msg.orientation.z = 0.0;
+		imu_msg.orientation.w = 0.0;
+		imu_msg.orientation_covariance = std::array<double,9>{0, 0, 0, 0, 0, 0, 0, 0, 0};
 
 		imu_msg.angular_velocity.x = wx;
 		imu_msg.angular_velocity.y = wy;
 		imu_msg.angular_velocity.z = wz;
-		imu_msg.angular_velocity_covariance = {0.0001, 0, 0, 0, 0.0001, 0, 0, 0, 0.0001};
+		imu_msg.angular_velocity_covariance = std::array<double,9>{0.0001, 0, 0, 0, 0.0001, 0, 0, 0, 0.0001};
 
 		// linear acceleration: convert G -> m/s^2
 		const double G = 9.80665;
 		imu_msg.linear_acceleration.x = ax_g * G;
 		imu_msg.linear_acceleration.y = ay_g * G;
 		imu_msg.linear_acceleration.z = az_g * G;
-		imu_msg.linear_acceleration_covariance = {0.04,0,0,0,0.04,0,0,0,0.04};
+		imu_msg.linear_acceleration_covariance = std::array<double,9>{0.04,0,0,0,0.04,0,0,0,0.04};
 
-		imu_raw_pub.publish(imu_msg);
+		imu_raw_pub->publish(imu_msg);
 
 		fused_prescaler++;
 
-		//publish every third message, 100hz raw, 33hz fused
+		// publish every third message (approx same behavior as original)
 		if(fused_prescaler == 3){
 			fused_prescaler = 0;
 
@@ -337,25 +354,22 @@ private:
 			imu_msg.orientation.y = orientation[1];
 			imu_msg.orientation.z = orientation[2];
 			imu_msg.orientation.w = orientation[3];
-			imu_msg.orientation_covariance = {0.01, 0, 0, 0, 0.01, 0, 0, 0, 0.01};
-			imu_data_pub.publish(imu_msg);
+			imu_msg.orientation_covariance = std::array<double,9>{0.01, 0, 0, 0, 0.01, 0, 0, 0, 0.01};
+			imu_data_pub->publish(imu_msg);
 		}
-
-
 	}
 };
 
 int main(int argc, char** argv) {
-	ros::init(argc, argv, "rp2040_imu_node");
-	ros::NodeHandle nh("~");
-
+	rclcpp::init(argc, argv);
 	try {
-		RP2040IMUNode node(nh);
-		node.spin();
+		auto node = std::make_shared<RP2040IMUNode>();
+		node->spin();
 	} catch (std::exception &e) {
-		ROS_FATAL("Fatal exception in rp2040_imu_node: %s", e.what());
+		RCLCPP_FATAL(rclcpp::get_logger("rp2040_imu_node"), "Fatal exception in rp2040_imu_node: %s", e.what());
+		rclcpp::shutdown();
 		return 1;
 	}
-
+	rclcpp::shutdown();
 	return 0;
 }
