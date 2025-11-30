@@ -1,6 +1,6 @@
 <launch>
 
-	<node name="rp2040_imu_node" pkg="rp2040_connect_imu" type="imu.py" output="screen">
+	<node name="rp2040_imu_node" pkg="rp2040_connect_imu" type="rp2040_imu_node" output="screen">
 		<param name="port" value="/dev/ttyIMU" />
 		<param name="baud_rate" value="115200" />
 	</node>
