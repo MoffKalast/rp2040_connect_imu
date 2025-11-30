@@ -22,12 +22,6 @@ include_directories(
   ${Boost_INCLUDE_DIRS}
 )
 
-install(PROGRAMS
-    scripts/imu.py
-    scripts/imu_fused.py
-    DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
-)
-
 find_package(Boost REQUIRED COMPONENTS system)
 
 catkin_package()

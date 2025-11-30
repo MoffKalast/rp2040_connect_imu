@@ -154,6 +154,7 @@ public:
 
 		orientation = {0.0, 0.0, 0.0, 1.0};
 		last_time = ros::Time::now();
+		fused_prescaler = 0;
 
 		openSerial();
 		ROS_INFO("rp2040_imu_node started. port: %s, baud: %d, accel_gain: %f", param_port.c_str(), param_baud_rate, accel_gain);
@@ -330,7 +331,7 @@ private:
 		fused_prescaler++;
 
 		//publish every third message, 100hz raw, 33hz fused
-		if(fused_prescaler == 3){
+		if(fused_prescaler % 4 == 3){
 			fused_prescaler = 0;
 
 			imu_msg.orientation.x = orientation[0];
@@ -340,8 +341,6 @@ private:
 			imu_msg.orientation_covariance = {0.01, 0, 0, 0, 0.01, 0, 0, 0, 0.01};
 			imu_data_pub.publish(imu_msg);
 		}
-
-
 	}
 };
 
