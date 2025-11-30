@@ -27,9 +27,15 @@ Example launch:
 <node name="rp2040_imu_node" pkg="rp2040_connect_imu" type="imu.py" output="screen">
 	<param name="port" value="/dev/ttyIMU" />
 	<param name="baud_rate" value="115200" />
+	<param name="accel_correction_gain" value="0.03" />
+	<param name="gyro_scale" value="1.15" />
 </node>
 ```
 
 ## Published Topics
 
-- `/rp2040_imu/data` (Imu),  raw gyro and accel data
+- `/rp2040_imu/data_raw` (Imu), raw gyro and accel data, (100 Hz)
+
+- `/rp2040_imu/data` (Imu),  fused quaternion from gyro and accel data (33 Hz)
+ 
+- `/rp2040_imu/temperature` (Temperature), RP2040 built in temperature sensor (1 Hz)
